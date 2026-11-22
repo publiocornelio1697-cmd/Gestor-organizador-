@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gestor de Atestados</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2e6b3f">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{--v:#2e6b3f;--vc:#e8f3ea;--b:#f6faf6;--t:#1d2b21;--g:#6b7b70;--r:#b3261e;--a:#c77d00}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--b);color:var(--t);padding-bottom:80px}
+header{background:var(--v);color:#fff;padding:14px 16px;font-weight:700;font-size:18px;position:sticky;top:0;z-index:5}
+main{padding:12px;max-width:720px;margin:auto}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid #cfdcd2;z-index:5}
+nav button{flex:1;border:0;background:none;padding:12px 2px;font-size:13px;color:var(--g)}
+nav button.on{color:var(--v);font-weight:700;border-top:3px solid var(--v)}
+.card{background:#fff;border:1px solid #d7e4da;border-radius:10px;padding:12px;margin:8px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.num{font-size:26px;font-weight:700;color:var(--v)}
+input,select,textarea{width:100%;padding:10px;border:1px solid #b9cbbd;border-radius:8px;font-size:16px;background:#fff;margin:3px 0}
+button.b{background:var(--v);color:#fff;border:0;border-radius:8px;padding:10px 14px;font-size:15px}
+button.s{background:var(--vc);color:var(--v);border:1px solid #b9cbbd;border-radius:8px;padding:8px 12px;font-size:14px}
+button.d{background:#fdecea;color:var(--r);border:1px solid #f3b8b3;border-radius:8px;padding:8px 12px;font-size:14px}
+.tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;color:#fff}
+.Urgente{background:var(--r)}.Alta{background:var(--a)}.Normal{background:var(--v)}.Baja{background:#7a8f80}
+.done{opacity:.55;text-decoration:line-through}
+.small{font-size:13px;color:var(--g)}
+.warn{background:#fff6e0;border:1px solid #f0d890;padding:10px;border-radius:8px;font-size:13px;margin:8px 0}
+.mic{position:fixed;right:14px;bottom:76px;width:56px;height:56px;border-radius:50%;background:var(--v);color:#fff;border:0;font-size:24px;box-shadow:0 2px 8px #0005;z-index:6}
+.mic.rec{background:var(--r)}
+.modal{position:fixed;inset:0;background:#0007;display:none;align-items:center;justify-content:center;z-index:9;padding:16px}
+.modal>div{background:#fff;border-radius:12px;padding:16px;max-width:420px;width:100%}
+h3{margin:14px 0 4px;color:var(--v)}
+</style>
+</head>
+<body>
+<header>Gestor de Atestados y Actuaciones</header>
+<main id="app"></main>
+<button class="mic" id="mic" title="Dictar">🎤</button>
+<nav id="nav"></nav>
+<div class="modal" id="modal"><div id="mbody"></div></div>
+
+<script>
+const KEY='gestor_atestados_v1';
+const PRIO=['Urgente','Alta','Normal','Baja'];
+const DELITOS=['Daños','Hurto','Robo','Estafa','Amenazas','Lesiones','Otro'];
+let db=load();let tab='inicio';let open=null;
+let F={q:'',prio:'',est:'',orden:'prio'};let FA={est:'pend',resp:''};
+
+function load(){try{const d=JSON.parse(localStorage.getItem(KEY));if(d&&d.atestados)return d}catch(e){}return{atestados:[],responsables:[]}}
+function save(){localStorage.setItem(KEY,JSON.stringify(db))}
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const hoy=()=>new Date().toISOString().slice(0,10);
+const ahora=()=>new Date().toLocaleString('es-ES');
+const fmt=d=>d?d.split('-').reverse().join('/'):'';
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+function log(a,t){a.hist=a.hist||[];a.hist.push({t:ahora(),x:t});a.mod=new Date().toISOString()}
+const norm=s=>s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+function allActs(){return db.atestados.flatMap(a=>a.acts.map(x=>({...x,a})))}
+function atrasada(x){return !x.done&&x.limite&&x.limite<hoy()}
+function proxima(x){if(x.done||!x.limite||x.limite<hoy())return false;return (new Date(x.limite)-new Date(hoy()))/864e5<=3}
+function dias(a){return Math.floor((Date.now()-new Date(a.mod||a.creado))/864e5)}
+
+function render(){
+  const tabs=[['inicio','Inicio'],['atestados','Atestados'],['actuaciones','Actuaciones'],['ajustes','Ajustes']];
+  $('#nav').innerHTML=tabs.map(([k,n])=>`<button class="${tab===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
+  $('#app').innerHTML={inicio:vInicio,atestados:vAtestados,actuaciones:vActs,ajustes:vAjustes}[tab]();
+}
+function go(t){tab=t;open=null;render();scrollTo(0,0)}
+
+function vInicio(){
+  const A=db.atestados,ac=A.filter(a=>!a.done),X=allActs();
+  const c=p=>ac.filter(a=>a.prio===p).length;
+  const sm=ac.filter(a=>dias(a)>=7);
+  return `<div class="warn">Herramienta auxiliar de organización. No introduzcas datos identificativos de personas. El almacenamiento local no supone autorización para introducir información policial real.</div>
+  <div class="grid">
+  <div class="card"><div class="num">${ac.length}</div>Atestados activos</div>
+  <div class="card"><div class="num">${c('Urgente')}</div>Urgentes</div>
+  <div class="card"><div class="num">${c('Alta')}</div>Prioridad alta</div>
+  <div class="card"><div class="num">${c('Normal')+c('Baja')}</div>Normal / baja</div>
+  <div class="card"><div class="num">${X.filter(x=>!x.done).length}</div>Actuaciones pendientes</div>
+  <div class="card"><div class="num" style="color:var(--r)">${X.filter(atrasada).length}</div>Atrasadas</div>
+  </div>
+  <div class="row" style="margin:8px 0">
+  <button class="b" onclick="nuevoAt()">+ Atestado</button>
+  <button class="s" onclick="go('actuaciones')">Pendientes</button>
+  <button class="s" onclick="F.prio='Urgente';F.est='act';go('atestados')">Urgentes</button></div>
+  <h3>Próximas a vencer</h3>${X.filter(proxima).map(x=>`<div class="card">${esc(x.desc)}<div class="small">Atestado ${esc(x.a.ref)} · vence ${fmt(x.limite)}</div></div>`).join('')||'<div class="small">Ninguna</div>'}
+  <h3>Sin movimiento (7 días o más)</h3>${sm.map(a=>`<div class="card" onclick="abrir('${a.id}')">Atestado ${esc(a.ref)} <span class="small">· ${dias(a)} días${dias(a)>30?' · REVISAR':dias(a)>=15?' · atención preferente':''}</span></div>`).join('')||'<div class="small">Ninguno</div>'}
+  <h3>Últimos registrados</h3>${[...A].sort((a,b)=>b.creado.localeCompare(a.creado)).slice(0,5).map(a=>`<div class="card" onclick="abrir('${a.id}')">${esc(a.ref)} · ${esc(a.delito)} <span class="tag ${a.prio}">${a.prio}</span></div>`).join('')||'<div class="small">Todavía no hay atestados</div>'}`;
+}
+
+function vAtestados(){
+  if(open)return vFicha();
+  let L=db.atestados.filter(a=>{
+    if(F.q&&!norm(a.ref+' '+a.delito).includes(norm(F.q)))return false;
+    if(F.prio&&a.prio!==F.prio)return false;
+    if(F.est==='act'&&a.done)return false;
+    if(F.est==='fin'&&!a.done)return false;
+    return true});
+  const o=F.orden;
+  L.sort((a,b)=>o==='fecha'?b.fecha.localeCompare(a.fecha):o==='fechaasc'?a.fecha.localeCompare(b.fecha):o==='ref'?a.ref.localeCompare(b.ref,'es',{numeric:true}):(PRIO.indexOf(a.prio)-PRIO.indexOf(b.prio))||a.fecha.localeCompare(b.fecha));
+  return `<button class="b" onclick="nuevoAt()">+ Nuevo atestado</button>
+  <div class="card"><input placeholder="Buscar por número o delito" value="${esc(F.q)}" oninput="F.q=this.value;render2()">
+  <div class="grid"><select onchange="F.prio=this.value;render()"><option value="">Toda prioridad</option>${PRIO.map(p=>`<option ${F.prio===p?'selected':''}>${p}</option>`).join('')}</select>
+  <select onchange="F.est=this.value;render()"><option value="">Todos</option><option value="act" ${F.est==='act'?'selected':''}>No completados</option><option value="fin" ${F.est==='fin'?'selected':''}>Completados</option></select></div>
+  <select onchange="F.orden=this.value;render()">${[['prio','Orden: prioridad y antigüedad'],['fecha','Fecha: más reciente'],['fechaasc','Fecha: más antigua'],['ref','Número / referencia']].map(([k,n])=>`<option value="${k}" ${o===k?'selected':''}>${n}</option>`).join('')}</select></div>
+  <div id="lista">${listaAt(L)}</div>`;
+}
+function listaAt(L){return L.map(a=>`<div class="card ${a.done?'done':''}"><div class="row" style="justify-content:space-between"><b onclick="abrir('${a.id}')">${esc(a.ref)}</b><span class="tag ${a.prio}">${a.prio}</span></div>
+<div class="small">${fmt(a.fecha)} · ${esc(a.delito)} · ${a.acts.filter(x=>!x.done).length} act. pendientes</div>
+<div class="row" style="margin-top:6px"><button class="s" onclick="abrir('${a.id}')">Abrir</button><button class="s" onclick="togAt('${a.id}')">${a.done?'Reabrir':'Completar'}</button></div></div>`).join('')||'<div class="small" style="margin:12px">No hay atestados.</div>'}
+function render2(){const t=F.q;render();const i=document.querySelector('input');if(i){i.focus();i.setSelectionRange(t.length,t.length)}}
+
+function vFicha(){
+  const a=db.atestados.find(x=>x.id===open);if(!a){open=null;return vAtestados()}
+  return `<button class="s" onclick="open=null;render()">← Volver</button>
+  <div class="card ${a.done?'done':''}"><h3 style="margin:0">Atestado ${esc(a.ref)}</h3>
+  <span class="tag ${a.prio}">${a.prio}</span> <span class="small">${a.done?'Completado':'No completado'} · ${fmt(a.fecha)} · ${esc(a.delito)}</span>
+  <p>${esc(a.resumen)||'<i class="small">Sin resumen</i>'}</p><p class="small">${esc(a.obs||'')}</p>
+  <div class="row"><button class="s" onclick="editAt('${a.id}')">Editar</button><button class="s" onclick="togAt('${a.id}')">${a.done?'Reabrir':'Completar'}</button><button class="d" onclick="delAt('${a.id}')">Eliminar</button></div></div>
+  <h3>Actuaciones</h3><button class="b" onclick="nuevaAct('${a.id}')">+ Actuación</button>
+  ${a.acts.map(x=>`<div class="card ${x.done?'done':''}">${esc(x.desc)}<div class="small">${esc(x.resp||'Sin responsable')}${x.limite?' · límite '+fmt(x.limite):''}${atrasada(x)?' · <b style="color:var(--r)">ATRASADA</b>':''}</div>
+  <div class="row" style="margin-top:6px"><button class="s" onclick="togAct('${a.id}','${x.id}')">${x.done?'Reabrir':'Realizada'}</button><button class="s" onclick="editAct('${a.id}','${x.id}')">Editar</button><button class="d" onclick="delAct('${a.id}','${x.id}')">Borrar</button></div></div>`).join('')||'<div class="small">Sin actuaciones</div>'}
+  <h3>Historial</h3>${(a.hist||[]).slice().reverse().map(h=>`<div class="small">${h.t} — ${esc(h.x)}</div>`).join('')}`;
+}
+function abrir(id){tab='atestados';open=id;render();scrollTo(0,0)}
+
+function vActs(){
+  let X=allActs().filter(x=>FA.est==='pend'?!x.done:FA.est==='ok'?x.done:FA.est==='atr'?atrasada(x):true);
+  if(FA.resp)X=X.filter(x=>x.resp===FA.resp);
+  X.sort((a,b)=>(a.limite||'9999').localeCompare(b.limite||'9999'));
+  const rs=[...new Set(allActs().map(x=>x.resp).filter(Boolean))];
+  return `<div class="card"><div class="grid"><select onchange="FA.est=this.value;render()">${[['pend','Pendientes'],['atr','Atrasadas'],['ok','Realizadas'],['todas','Todas']].map(([k,n])=>`<option value="${k}" ${FA.est===k?'selected':''}>${n}</option>`).join('')}</select>
+  <select onchange="FA.resp=this.value;render()"><option value="">Todos los responsables</option>${rs.map(r=>`<option ${FA.resp===r?'selected':''}>${esc(r)}</option>`).join('')}</select></div></div>
+  ${X.map(x=>`<div class="card ${x.done?'done':''}">${esc(x.desc)}<div class="small">Atestado ${esc(x.a.ref)} · ${esc(x.resp||'Sin responsable')}${x.limite?' · límite '+fmt(x.limite):''}${atrasada(x)?' · <b style="color:var(--r)">ATRASADA</b>':''}</div>
+  <div class="row" style="margin-top:6px"><button class="s" onclick="togAct('${x.a.id}','${x.id}')">${x.done?'Reabrir':'Realizada'}</button><button class="s" onclick="abrir('${x.a.id}')">Ver atestado</button></div></div>`).join('')||'<div class="small" style="margin:12px">Nada que mostrar.</div>'}`;
+}
+
+function vAjustes(){
+  return `<div class="card"><h3 style="margin-top:0">Copia de seguridad</h3>
+  <p class="small">Guarda un archivo con todos tus datos. Hazlo con frecuencia: si desinstalas o borras los datos del navegador, se pierden.</p>
+  <div class="row"><button class="b" onclick="backup()">Guardar copia</button><button class="s" onclick="$('#file').click()">Restaurar copia</button></div>
+  <input type="file" id="file" accept=".json" style="display:none" onchange="restore(this)"></div>
+  <div class="card"><h3 style="margin-top:0">Exportar a Excel</h3><p class="small">Genera un CSV que Excel abre directamente.</p>
+  <div class="row"><button class="s" onclick="csv('at')">Atestados</button><button class="s" onclick="csv('ac')">Actuaciones</button></div></div>
+  <div class="card"><h3 style="margin-top:0">Datos</h3><button class="d" onclick="borrarTodo()">Borrar todos los datos</button></div>`;
+}
+
+/* ---------- Formularios ---------- */
+function modal(h){$('#mbody').innerHTML=h;$('#modal').style.display='flex'}
+function cerrar(){$('#modal').style.display='none'}
+function formAt(a){a=a||{ref:'',fecha:hoy(),delito:'Daños',prio:'Normal',resumen:'',obs:''};
+  modal(`<h3 style="margin-top:0">${a.id?'Editar':'Nuevo'} atestado</h3>
+  <input id="f_ref" placeholder="Número o referencia" value="${esc(a.ref)}">
+  <input id="f_fecha" type="date" value="${a.fecha}">
+  <input id="f_del" list="dl_del" placeholder="Tipo de delito (escribe lo que quieras)" value="${esc(a.delito)}">
+  <datalist id="dl_del">${[...new Set([...DELITOS,...db.atestados.map(x=>x.delito)])].filter(Boolean).map(d=>`<option value="${esc(d)}">`).join('')}</datalist>
+  <select id="f_prio">${PRIO.map(p=>`<option ${a.prio===p?'selected':''}>${p}</option>`).join('')}</select>
+  <textarea id="f_res" rows="3" placeholder="Resumen anonimizado (sin datos de personas)">${esc(a.resumen)}</textarea>
+  <textarea id="f_obs" rows="2" placeholder="Observaciones operativas">${esc(a.obs||'')}</textarea>
+  <div class="row"><button class="b" onclick="saveAt('${a.id||''}')">Guardar</button><button class="s" onclick="cerrar()">Cancelar</button></div>`)}
+function nuevoAt(){formAt()}
+function editAt(id){formAt(db.atestados.find(a=>a.id===id))}
+function saveAt(id){
+  const ref=$('#f_ref').value.trim();if(!ref)return alert('Indica el número o referencia');
+  if(db.atestados.some(a=>a.ref===ref&&a.id!==id)&&!confirm('Ya existe un atestado con esa referencia. ¿Guardar igualmente?'))return;
+  const d={ref,fecha:$('#f_fecha').value||hoy(),delito:$('#f_del').value.trim()||'Sin especificar',prio:$('#f_prio').value,resumen:$('#f_res').value,obs:$('#f_obs').value};
+  if(id){const a=db.atestados.find(x=>x.id===id);if(a.prio!==d.prio)log(a,`Prioridad: ${a.prio} → ${d.prio}`);Object.assign(a,d);log(a,'Atestado modificado')}
+  else{const a={id:uid(),...d,done:false,acts:[],hist:[],creado:new Date().toISOString()};log(a,'Atestado creado');db.atestados.push(a)}
+  save();cerrar();render()}
+function togAt(id){const a=db.atestados.find(x=>x.id===id);a.done=!a.done;log(a,a.done?'Atestado completado':'Atestado reabierto');save();render()}
+function delAt(id){if(confirm('¿Eliminar este atestado y sus actuaciones? No se puede deshacer.')){db.atestados=db.atestados.filter(a=>a.id!==id);open=null;save();render()}}
+
+function formAct(aid,x){x=x||{desc:'',resp:'',limite:''};
+  modal(`<h3 style="margin-top:0">${x.id?'Editar':'Nueva'} actuación</h3>
+  <textarea id="g_desc" rows="2" placeholder="Descripción">${esc(x.desc)}</textarea>
+  <input id="g_resp" placeholder="Responsable (opcional)" value="${esc(x.resp)}">
+  <label class="small">Fecha límite (opcional)</label><input id="g_lim" type="date" value="${x.limite||''}">
+  <div class="row"><button class="b" onclick="saveAct('${aid}','${x.id||''}')">Guardar</button><button class="s" onclick="cerrar()">Cancelar</button></div>`)}
+function nuevaAct(aid){formAct(aid)}
+function editAct(aid,xid){formAct(aid,db.atestados.find(a=>a.id===aid).acts.find(x=>x.id===xid))}
+function saveAct(aid,xid){
+  const desc=$('#g_desc').value.trim();if(!desc)return alert('Escribe la descripción');
+  const a=db.atestados.find(x=>x.id===aid),d={desc,resp:$('#g_resp').value.trim(),limite:$('#g_lim').value};
+  if(xid){Object.assign(a.acts.find(x=>x.id===xid),d);log(a,'Actuación modificada: '+desc)}
+  else{a.acts.push({id:uid(),...d,done:false,creada:hoy()});log(a,'Actuación creada: '+desc)}
+  save();cerrar();render()}
+function togAct(aid,xid){const a=db.atestados.find(x=>x.id===aid),x=a.acts.find(y=>y.id===xid);x.done=!x.done;x.fin=x.done?hoy():'';log(a,(x.done?'Actuación realizada: ':'Actuación reabierta: ')+x.desc);save();render()}
+function delAct(aid,xid){if(confirm('¿Borrar esta actuación?')){const a=db.atestados.find(x=>x.id===aid);a.acts=a.acts.filter(x=>x.id!==xid);log(a,'Actuación eliminada');save();render()}}
+
+/* ---------- Copias y exportación ---------- */
+function descargar(nombre,txt,tipo){const b=new Blob([txt],{type:tipo});const u=URL.createObjectURL(b);const l=document.createElement('a');l.href=u;l.download=nombre;l.click();setTimeout(()=>URL.revokeObjectURL(u),2000)}
+function backup(){descargar(`copia-atestados-${hoy()}.json`,JSON.stringify({app:'gestor-atestados',v:1,datos:db}),'application/json')}
+function restore(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const j=JSON.parse(r.result);if(j.app!=='gestor-atestados'||!j.datos||!Array.isArray(j.datos.atestados))throw 0;
+  if(confirm(`El archivo contiene ${j.datos.atestados.length} atestados. Restaurar REEMPLAZARÁ todos los datos actuales. ¿Continuar?`)){db=j.datos;save();render();alert('Copia restaurada')}}catch(e){alert('Archivo no válido o incompatible')}inp.value=''};r.readAsText(f)}
+function csv(t){const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';let rows;
+  if(t==='at'){rows=[['Referencia','Fecha','Delito','Prioridad','Estado','Resumen','Observaciones']].concat(db.atestados.map(a=>[a.ref,fmt(a.fecha),a.delito,a.prio,a.done?'Completado':'No completado',a.resumen,a.obs]))}
+  else{rows=[['Atestado','Actuación','Responsable','Fecha límite','Estado']].concat(allActs().map(x=>[x.a.ref,x.desc,x.resp,fmt(x.limite),x.done?'Realizada':'Pendiente']))}
+  descargar(`${t==='at'?'atestados':'actuaciones'}-${hoy()}.csv`,'\ufeff'+rows.map(r=>r.map(q).join(';')).join('\n'),'text/csv')}
+function borrarTodo(){if(confirm('¿Borrar TODOS los datos? Haz antes una copia.')&&confirm('Última confirmación: se borrará todo.')){db={atestados:[],responsables:[]};save();render()}}
+
+/* ---------- Voz ---------- */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null;
+$('#mic').onclick=()=>{
+  if(!SR){const t=prompt('Tu navegador no admite dictado. Escribe la instrucción (o usa el micrófono del teclado):');if(t)interpretar(t);return}
+  if(rec){rec.stop();return}
+  rec=new SR();rec.lang='es-ES';rec.interimResults=false;
+  rec.onstart=()=>$('#mic').classList.add('rec');
+  rec.onend=()=>{$('#mic').classList.remove('rec');rec=null};
+  rec.onerror=e=>{alert('Error de voz: '+e.error+'. Puedes escribir la instrucción con el teclado.')};
+  rec.onresult=e=>interpretar(e.results[0][0].transcript);
+  rec.start()}
+function buscarRef(r){r=r.replace(/[.,]$/,'');return db.atestados.filter(a=>norm(a.ref)===norm(r))}
+function interpretar(txt){
+  const t=norm(txt).replace(/\s+/g,' ').trim();let m,acc=null,desc='';
+  const unico=(r)=>{const l=buscarRef(r);if(l.length!==1){alert(l.length?'Hay varios atestados con esa referencia; hazlo manualmente.':'No encuentro el atestado '+r);return null}return l[0]};
+  if(m=t.match(/(?:crea|crear|nuevo|abre|anade|agrega)\w* (?:un )?(?:nuevo )?atestado.*?(?:referencia|numero|n) (\S+)/)&&!/actuacion/.test(t)){
+    const ref=m[1].replace(/[.,]$/,'');const dm=t.match(/delito de (\w+)/);const dm2=t.match(/delito de ([\w ]+?)(?: de fecha| con | y |$)/);const dw=dm2?dm2[1].trim():'';const del=dw?(DELITOS.find(d=>norm(d)===dw||norm(d).startsWith(dw.slice(0,4)))||dw.charAt(0).toUpperCase()+dw.slice(1)):'Sin especificar';
+    desc=`Crear atestado ${ref}, fecha de hoy, delito: ${del}`;acc=()=>{const a={id:uid(),ref,fecha:hoy(),delito:del,prio:'Normal',resumen:'',obs:'',done:false,acts:[],hist:[],creado:new Date().toISOString()};log(a,'Atestado creado por voz');db.atestados.push(a)}}
+  else if(m=t.match(/(?:anade|agrega|crea|nueva)\w* (?:una )?actuacion.*?atestado (\S+?) (?:para|de) (.+)/)){
+    const a=unico(m[1]);if(!a)return;const d=m[2];desc=`Añadir al atestado ${a.ref} la actuación: «${d}»`;acc=()=>{a.acts.push({id:uid(),desc:d,resp:'',limite:'',done:false,creada:hoy()});log(a,'Actuación creada por voz: '+d)}}
+  else if(m=t.match(/atestado (\S+?).*prioridad (urgente|alta|normal|baja)/)||t.match(/prioridad (urgente|alta|normal|baja).*atestado (\S+)/)){
+    const alt=/^prioridad/.test(m[0]);const ref=alt?m[2]:m[1],p=alt?m[1]:m[2];const a=unico(ref);if(!a)return;const P=PRIO.find(x=>norm(x)===p);
+    desc=`Poner el atestado ${a.ref} con prioridad ${P}`;acc=()=>{log(a,`Prioridad: ${a.prio} → ${P} (voz)`);a.prio=P}}
+  else if(m=t.match(/marca\w* .*?(?:completad|finalizad|realizad)\w*.*?atestado (\S+)/)||t.match(/(?:completa|finaliza)\w* .*?atestado (\S+)/)){
+    const a=unico(m[1]);if(!a)return;
+    const am=t.match(/actuacion de (.+?) (?:del|de el|en el|al) atestado/);
+    if(am){const x=a.acts.filter(y=>norm(y.desc).includes(am[1]));if(x.length!==1){alert(x.length?'Varias actuaciones coinciden; hazlo manualmente.':'No encuentro esa actuación.');return}
+      desc=`Marcar como realizada la actuación «${x[0].desc}» del atestado ${a.ref}`;acc=()=>{x[0].done=true;x[0].fin=hoy();log(a,'Actuación realizada por voz: '+x[0].desc)}}
+    else{desc=`Marcar como completado el atestado ${a.ref}`;acc=()=>{a.done=true;log(a,'Atestado completado por voz')}}}
+  else if(/atrasad/.test(t)){FA.est='atr';go('actuaciones');return}
+  else if(/(\d+|quince|treinta|siete) dias sin movimiento|sin movimiento/.test(t)){tab='inicio';render();scrollTo(0,9999);return}
+  else if(/urgente/.test(t)&&/muestra|ver|dime/.test(t)){F.prio='Urgente';F.est='act';go('atestados');return}
+  else if(/pendiente/.test(t)&&/atestado/.test(t)){F.prio='';F.est='act';go('atestados');return}
+  else if(/pendiente/.test(t)){FA.est='pend';go('actuaciones');return}
+  else{alert('No he entendido: «'+txt+'»\n\nPrueba: «Crear atestado referencia 123 por un delito de daños», «Añade una actuación al atestado 123 para comprobar la documentación», «Pon el atestado 123 prioridad alta», «Marca como completado el atestado 123», «Muéstrame los pendientes», «Actuaciones atrasadas».');return}
+  window._acc=acc;
+  modal(`<h3 style="margin-top:0">¿Es correcto?</h3><p class="small">Has dicho: «${esc(txt)}»</p><p><b>${esc(desc)}</b></p>
+  <div class="row"><button class="b" onclick="_acc();save();cerrar();render()">Confirmar</button><button class="s" onclick="cerrar()">Cancelar</button></div>`)}
+
+render();
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
+if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>
